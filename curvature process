@@ -1,0 +1,186 @@
+Part1:
+clearvars; close all; clc;
+tic;
+
+params = struct(...
+        'interpolationScale', 1, ...
+        'originalPixelSize', 8.33, ...
+        'minAreaNm2', 15000, ...
+        'maxAreaNm2', 270000, ...
+        'minPeakDistanceNm', 12, ...
+        'fixedThreshold', 0.050, ...
+        'curvatureThresholds', 0.010:0.005:0.15, ...
+        'quantilesVesicle', [0.05:0.05:0.95, 0.96,0.97,0.98,0.99,1.0], ...
+        'quantilesImage', [0.05:0.05:0.95, 0.96,0.97,0.98,0.99,1.0], ...
+        'densityBins', [0, 1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 0.1, 0.25, 0.5, 0.75, 1], ...
+        'edgeMargin', 15, ...
+        'smoothingFactor', 5, ...
+        'logScaleFactor', 1000, ...
+        'debugMode', true ...
+    );
+
+inputFolder = "D:\wbqql2\MATLABTEST\StandardL1";
+
+imageFiles = dir(fullfile(inputFolder, '*.tif'));
+if isempty(imageFiles)
+    error('No TIFF images found');
+end
+
+allStats = cell(1, length(imageFiles));
+
+[parentDir, ~] = fileparts(inputFolder);
+outputDir = parentDir;
+
+if ~exist(outputDir, 'dir')
+    mkdir(outputDir);
+end
+
+processedCount = 0;
+for i = 1:length(imageFiles)
+    imgPath = fullfile(inputFolder, imageFiles(i).name);
+    [~, imgName] = fileparts(imgPath);
+    
+    try
+        fprintf('Processing: %s (%d/%d)\n', imgName, i, length(imageFiles));
+        
+        [~, ~, ~, stats] = processSingleVesicleImage(imgPath, params);
+        
+        stats.imageName = imgName;
+        
+        allStats{i} = stats;
+        processedCount = processedCount + 1;
+        
+        fprintf('Success!\n');
+        
+    catch ME
+        fprintf('Failed: %s - %s\n', imgName, ME.message);
+        stats = struct();
+        stats.imageName = imgName;
+        stats.errorMessage = ME.message;
+        allStats{i} = stats;
+    end
+end
+
+[~, folderName] = fileparts(inputFolder);
+
+if isstring(folderName)
+    folderName = char(folderName);
+end
+
+excelFileName = [folderName '_summary.xlsx'];
+excelPath = fullfile(outputDir, excelFileName);
+
+if isstring(excelPath)
+    excelPath = char(excelPath);
+end
+
+fprintf('Excel path: %s\n', excelPath);
+fprintf('Path type: %s\n', class(excelPath));
+fprintf('Path length: %d\n', numel(excelPath));
+
+try
+    exportImageStatsToExcel(allStats, excelPath);
+    fprintf('Excel report saved: %s\n', excelPath);
+catch ME
+    fprintf('Excel export failed: %s\n', ME.message);
+    
+    backupExcelPath = fullfile(outputDir, ['backup_' excelFileName]);
+    try
+        exportImageStatsToExcel(allStats, backupExcelPath);
+        fprintf('Backup Excel saved: %s\n', backupExcelPath);
+    catch
+        fprintf('Backup Excel save failed\n');
+    end
+end
+
+matFileName = [folderName '_all_stats.mat'];
+matPath = fullfile(outputDir, matFileName);
+
+if isstring(matPath)
+    matPath = char(matPath);
+end
+
+fprintf('MAT path: %s\n', matPath);
+fprintf('Path type: %s\n', class(matPath));
+fprintf('Path length: %d\n', numel(matPath));
+
+try
+    save(matPath, 'allStats');
+    fprintf('MAT file saved: %s\n', matPath);
+catch ME
+    fprintf('MAT save failed: %s\n', ME.message);
+    
+    backupMatPath = fullfile(outputDir, ['backup_' matFileName]);
+    try
+        save(backupMatPath, 'allStats');
+        fprintf('Backup MAT saved: %s\n', backupMatPath);
+    catch
+        fprintf('Backup MAT save failed\n');
+    end
+end
+
+elapsedTime = toc;
+fprintf('\nData processing completed! Successful images: %d/%d\n', processedCount, length(imageFiles));
+fprintf('Total time: %.2f seconds\n', elapsedTime);
+Part2:
+Part3:
+function exportImageStatsToExcel(imageStatsArray, outputPath)
+    summaryTable = table();
+    
+    thresholds = imageStatsArray{1}.allThresholds;
+    numThresholds = length(thresholds);
+    
+    densityColNames = arrayfun(@(t) sprintf('Density_%.3f', t), thresholds, 'UniformOutput', false);
+    
+    for imgIdx = 1:length(imageStatsArray)
+        stats = imageStatsArray{imgIdx};
+        
+        row = table();
+        row.ImageIndex = imgIdx;
+        row.ImageName = {stats.imageName};
+        row.NumValidVesicles = stats.numValidVesicles;
+        row.D9595 = stats.d9595;
+        
+        if isfield(stats, 'density1') && isfield(stats.density1, 'mean')
+            densityValues = stats.density1.mean;
+            for t = 1:numThresholds
+                row.(densityColNames{t}) = densityValues(t);
+            end
+        else
+            for t = 1:numThresholds
+                row.(densityColNames{t}) = NaN;
+            end
+        end
+        
+        summaryTable = [summaryTable; row];
+        
+        [matDir, ~] = fileparts(outputPath);
+        
+        if ~exist(matDir, 'dir')
+            mkdir(matDir);
+        end
+        
+        vesicleDetails = stats.vesicleDetails;
+        matPath = fullfile(matDir, sprintf('%s_vesicles.mat', stats.imageName));
+        save(matPath, 'vesicleDetails');
+    end
+    
+    [excelDir, ~] = fileparts(outputPath);
+    if ~exist(excelDir, 'dir')
+        mkdir(excelDir);
+    end
+    
+    writetable(summaryTable, outputPath, 'Sheet', 'ImageLevelStats');
+    
+    try
+        thresholds = thresholds(:);
+        thresholdInfo = table(thresholds, 'VariableNames', {'ThresholdSequence'});
+        writetable(thresholdInfo, outputPath, 'Sheet', 'ThresholdInfo');
+    catch
+        writecell({'ThresholdSequence'}, outputPath, 'Sheet', 'ThresholdInfo', 'Range', 'A1');
+        writematrix(thresholds, outputPath, 'Sheet', 'ThresholdInfo', 'Range', 'A2');
+    end
+    
+    fprintf('Image-level statistics exported to: %s\n', outputPath);
+    fprintf('Vesicle-level information saved as MAT files\n');
+end
